@@ -1,137 +1,496 @@
-1. Write a two pass assembler for the assembly language. (75%)
-The assembler must,
-o Read assembly language from a text file, assigning label values and instruction
-opcodes. The format of the assembly language is described.
-o Diagnose common assembly errors such as unknown instruction, no such label,
-duplicate label.
-o Produce an object file of the produced machine code. This file should be a binary
-file. Code starts at address zero.
-o Produce a listing file. There is a choice of the format of the listing file. It can
-either be a simple memory dump, or show the bytes produced for each instruction,
-and that instruction's mnemonic. The formats are shown. (Extra marks are
-available for the latter type of listing file)
-o You must write the assembler in ISO C89. (`gcc -std=c89 -pedantic -W -Wall' is a
-good way to check things.) or others are also fine.
-2. Test your assembler with the sample programs listed.
-3. Test your assembler with additional programs and submit evidence of this.
-4. Write a bubble sort program in SIMPLE Assembler. The start of this file is provided, you
-have to fill in the blanks. 
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
+#include <string.h>
+#include <map>
+#include <set>
+#include <iomanip>
 
-Example Programs
-This is a valid, but nonsense assembly file. Your assembler should not issue any errors (it could
-issue warning though).
-; test1.asm
-label: ; an unused label
- ldc 0
- ldc -5
- ldc +5
-loop: br loop ; an infinite loop
-br next ;offset should be zero
-next:
- ldc loop ; load code address
- ldc var1 ; forward ref
-var1: data 0 ; a variable
-It is shown as text below.
-This example contains many errors. Your assembler should spot them all (it need not copy the
-error message exactly, but should issue something appropriate).
-; test2.asm
-; Test error handling
-label:
-label: ; duplicate label definition
-br nonesuch ; no such label
-ldc 08ge ; not a number
-ldc ; missing operand
-add 5 ; unexpected operand
-ldc 5, 6; extra on end of line
-0def: ; bogus label name
-fibble; bogus mnemonic
-0def ; bogus mnemonic 
-If you implement the SET pseudo instruction, this program should assemble
-; test3.asm
-; Test SET
-val: SET 75
-ldc val
-adc val2
-val2: SET 66
-Here is an implementation of memcpy which assembles to  object file  and listing
-Here's a real file, (the one we will be testing with) you should be able to assemble and then
-emulate it. See if you can figure out what it's doing. .
- ldc 0x1000
- a2sp
- adj -1
- ldc result
- stl 0
- ldc count
- ldnl 0
- call main
- adj 1
- HALT
-;
-main: adj -3
- stl 1
- stl 2
- ldc 0 ; zero accumulator
- stl 0
-loop: adj -1
- ldl 3
- stl 0
- ldl 1
- call triangle
- adj 1
- ldl 3
- stnl 0
- ldl 3
- adc 1
- stl 3
- ldl 0
- adc 1
- stl 0
- ldl 0 ; reload it
- ldl 2
- sub
- brlz loop
- ldl 1 ; get return address
- adj 3
- return
-; 
-triangle:adj -3
- stl 1
- stl 2
- ldc 1
- shl
- ldl 3
- sub
- brlz skip
- ldl 3
- ldl 2
- sub
- stl 2
-skip: ldl 2
- brz one
- ldl 3
- adc -1
- stl 0
- adj -1
- ldl 1
- stl 0
- ldl 3
- adc -1
- call triangle
- ldl 1
- stl 0
- stl 1
- ldl 3
- call triangle
- adj 1
- ldl 0
- add
- ldl 1
- adj 3
- return
-one: ldc 1
- ldl 1
- adj 3
- return
-;
-count: data 10
-result: data 0 
+using namespace std;
+
+// Map of label names to their corresponding memory addresses
+map<string, int> labelMap;
+
+// Set of label names that have been used in the program
+set<string> usedLabels;
+
+// Set of error messages, with corresponding line numbers
+set<pair<int, string>> errorSet;
+
+// Set of warning messages
+set<string> warningSet;
+
+// Map of error codes to their corresponding error messages
+map<int, string> errorCodeMap = {
+    {0, "Invalid label name"},
+    {1, "Incorrect instruction format"},
+    {2, "Duplicate label names"},
+    {3, "Invalid number"}};
+
+// Map of instructions without operands to their corresponding opcode values
+map<string, int> without_oper_map = {
+    {"add", 6},
+    {"sub", 7},
+    {"shl", 8},
+    {"shr", 9},
+    {"a2sp", 11},
+    {"sp2a", 12},
+    {"return", 14},
+    {"HALT", 18}};
+
+// Map of instructions with operands to their corresponding opcode values
+map<string, int> with_oper_map{
+    {"ldc", 0},
+    {"adc", 1},
+    {"ldl", 2},
+    {"stl", 3},
+    {"ldnl", 4},
+    {"stnl", 5},
+    {"adj", 10},
+    {"call", 13},
+    {"brz", 15},
+    {"brlz", 16},
+    {"br", 17},
+    {"SET", 19},
+    {"data", 20}};
+
+// Map of instructions with PC offsets to their corresponding opcode values
+map<string, int> instWithPcoffMap{
+    {"call", 13},
+    {"brz", 15},
+    {"brlz", 16},
+    {"br", 17}};
+
+vector<int> machineCode;
+
+int linePos = 1;
+
+void remove_comments(string &line)
+{
+    int i = 0;
+    while (line[i] != '\0')
+    {
+        if (line[i] == ';')
+        {
+            line[i] = '\0';
+            break;
+        }
+        i++;
+    }
+}
+
+bool isValidLabel(string &label)
+{
+    for (int j = 0; j < label.length(); j++)
+    {
+        char c = label[j];
+
+        if (j == 0)
+        {
+            if (!isalpha(c) && c != '_')
+            {
+                return false;
+            }
+        }
+
+        if (!isalnum(c) && c != '_')
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+vector<string> extract_words(string &line)
+{
+    int i = 0;
+    while (i < line.length())
+    {
+        if (line[i] == ':')
+        {
+            line.insert(i + 1, " ");
+        }
+        i++;
+    }
+
+    remove_comments(line);
+
+    stringstream ss(line);
+
+    vector<string> words;
+    string word;
+    while (ss >> word)
+    {
+        words.push_back(word);
+    }
+
+    return words;
+}
+
+int string_to_number(std::string &s)
+{
+    int base = 10;
+    if (s.length() > 2)
+    {
+        if (s[0] == '0' && s[1] == 'x')
+        {
+            for (int j = 2; j < s.length(); j++)
+            {
+                if (!('0' <= s[j] && s[j] <= '9') && !('a' <= tolower(s[j]) && tolower(s[j]) <= 'f'))
+                {
+                    errorSet.insert({linePos, errorCodeMap[3]});
+                    return -1;
+                }
+            }
+            base = 16;
+        }
+    }
+    if (s.length() > 1)
+    {
+        if (s[0] == '0')
+        {
+            for (int j = 1; j < s.length(); j++)
+            {
+                if (!('0' <= s[j] && s[j] <= '7'))
+                {
+                    errorSet.insert({linePos, errorCodeMap[3]});
+                    return -1;
+                }
+            }
+            base = 8;
+        }
+    }
+    int start_pos = 0;
+    if (s[0] == '+' || s[0] == '-')
+    {
+        start_pos = 1;
+    }
+    for (int j = start_pos; j < s.length(); j++)
+    {
+        if (!isdigit(s[j]))
+        {
+            errorSet.insert({linePos, errorCodeMap[3]});
+            return -1;
+        }
+    }
+    return stoi(s, 0, base);
+}
+
+void insertMachineCode(int nop, vector<string> word, ofstream *list)
+{
+    int code = 0;
+
+    if (nop == 0)
+    {
+        machineCode.push_back(without_oper_map[word[0]]);
+        *list << setw(8) << setfill('0') << hex << without_oper_map[word[0]] << " ";
+        return;
+    }
+    else
+    {
+        if (word.size() == 1)
+        {
+            return;
+        }
+
+        if (word[0] == "SET")
+        {
+            return;
+        }
+        if (word[0] == "data")
+        {
+            if (labelMap.find(word[1]) != labelMap.end())
+            {
+                usedLabels.insert(word[1]);
+                code |= labelMap[word[1]];
+            }
+            else
+            {
+                code |= string_to_number(word[1]);
+            }
+
+            machineCode.push_back(code);
+            *list << setw(8) << setfill('0') << hex << code << " ";
+            return;
+        }
+
+        code = with_oper_map[word[0]];
+
+        if (instWithPcoffMap.find(word[0]) != instWithPcoffMap.end())
+        {
+            if (labelMap.find(word[1]) != labelMap.end())
+            {
+                usedLabels.insert(word[1]);
+                code |= ((labelMap[word[1]] - machineCode.size() - 1) << 8);
+            }
+            else
+            {
+                errorSet.insert({linePos, "No such label"});
+            }
+        }
+        else
+        {
+            if (labelMap.find(word[1]) != labelMap.end())
+            {
+                usedLabels.insert(word[1]);
+                code |= ((labelMap[word[1]]) << 8);
+            }
+            else
+            {
+                code |= (string_to_number(word[1]) << 8);
+            }
+        }
+        machineCode.push_back(code);
+        *list << setw(8) << setfill('0') << hex << code << " ";
+    }
+}
+
+void generate_log_file(const string &filename)
+{
+    string log_filename = filename + ".log";
+    ofstream log_file(log_filename);
+
+    if (errorSet.size() > 0)
+    {
+        log_file << "ERRORS:" << endl;
+    }
+
+    for (auto &err : errorSet)
+    {
+        log_file << err.second << " on line " << err.first << endl;
+        cout << "ERROR: " << err.second << " on line " << err.first << endl;
+    }
+
+    if (warningSet.size() > 0)
+    {
+        log_file << "WARNINGS:" << endl;
+    }
+
+    for (auto &warning : warningSet)
+    {
+        log_file << warning << endl;
+        cout << "WARNING: " << warning << endl;
+    }
+
+    log_file.close();
+}
+
+void write_object_file(const string &filename)
+{
+    string obj_filename = filename + ".obj";
+
+    ofstream obj_file(obj_filename, ios::out | ios::binary);
+
+    for (int i = 0; i < machineCode.size(); i++)
+    {
+        obj_file.write((char *)&machineCode[i], sizeof(int));
+    }
+
+    obj_file.close();
+}
+
+int main(int argc, char **argv)
+{
+    if (argc != 2)
+    {
+        cout << "Error: Invalid number of arguments." << endl;
+    }
+
+    string filename;
+    string input = argv[1];
+
+    for (int i = 0; i < input.length(); i++)
+    {
+        if (input[i] == '.')
+        {
+            break;
+        }
+        filename += input[i];
+    }
+
+    ifstream inputFile;
+    inputFile.open(argv[1], ios::in);
+
+    // Check if file is open
+    if (!inputFile.is_open())
+    {
+        // Initialize program counter and line position
+        int pc = 0;
+        int linePos = 1;
+
+        // Loop through each line in the input file
+        string line;
+        while (getline(inputFile, line))
+        {
+            // Extract words from the line
+            vector<string> words = extract_words(line);
+
+            // Check if the line is empty
+            if (words.empty())
+            {
+                linePos++;
+                continue;
+            }
+
+            // Check if the first word is a label
+            if (words[0].back() == ':')
+            {
+                string labelToCheck = words[0].substr(0, words[0].length() - 1);
+                // Check if the label is valid
+                if (isValidLabel(labelToCheck))
+                {
+                    // Check if the label already exists
+                    if (labelMap.find(labelToCheck) == labelMap.end())
+                    {
+                        // Add the label to the label map
+                        labelMap[labelToCheck] = pc;
+                    }
+                    else
+                    {
+                        // Add duplicate label error
+                        errorSet.insert({linePos, errorCodeMap[2]});
+                    }
+
+                    // Check if there are any instructions after the label
+                    if (words.size() == 1)
+                    {
+                        linePos++;
+                        continue;
+                    }
+                    else
+                    {
+                        // Check if the instruction is valid
+                        if (words.size() == 3)
+                        {
+                            if (with_oper_map.find(words[1]) == with_oper_map.end())
+                            {
+                                errorSet.insert({linePos, errorCodeMap[1]});
+                            }
+
+                            // Check if the instruction is SET and assign the label value
+                            if (words[1] == "SET")
+                            {
+                                labelMap[labelToCheck] = string_to_number(words[2]);
+                                linePos++;
+                                continue;
+                            }
+                        }
+                        else if (words.size() == 2)
+                        {
+                            if (without_oper_map.find(words[1]) == without_oper_map.end())
+                            {
+                                errorSet.insert({linePos, errorCodeMap[1]});
+                            }
+                        }
+                        else
+                        {
+                            errorSet.insert({linePos, errorCodeMap[1]});
+                        }
+                    }
+                }
+                else
+                {
+                    // Add incorrect label error
+                    errorSet.insert({linePos, errorCodeMap[0]});
+                }
+            }
+            else
+            {
+                // Check if the instruction is valid
+                if (words.size() == 2)
+                {
+                    if (with_oper_map.find(words[0]) == with_oper_map.end())
+                    {
+                        errorSet.insert({linePos, errorCodeMap[1]});
+                    }
+                }
+                else if (words.size() == 1)
+                {
+                    if (without_oper_map.find(words[0]) == without_oper_map.end())
+                    {
+                        errorSet.insert({linePos, errorCodeMap[1]});
+                    }
+                }
+                else
+                {
+                    errorSet.insert({linePos, errorCodeMap[1]});
+                }
+            }
+
+            // Increment program counter and line position
+            pc++;
+            linePos++;
+        }
+    }
+    else
+    {
+        cout << "Unable to open the file" << endl;
+    }
+
+    inputFile.close();
+
+    string inputFileName = argv[1];
+    string listFileName = inputFileName + ".lst";
+
+    ofstream listFile;
+    listFile.open(listFileName, ios::out);
+
+    ifstream list;
+    inputFile.open(inputFileName, ios::in);
+
+    int lineNum = 1;
+    string line;
+    while (getline(inputFile, line))
+    {
+        listFile << setw(8) << setfill('0') << hex << lineNum << " ";
+        vector<string> words = extract_words(line);
+
+        if (words.empty())
+        {
+            listFile << endl;
+            lineNum++;
+            continue;
+        }
+
+        // remove label if present
+        if (words[0].back() == ':')
+        {
+            words.erase(words.begin());
+        }
+
+        if (words.empty())
+        {
+            listFile << endl;
+            lineNum++;
+            continue;
+        }
+
+        // determine instruction type and insert machine code
+        int instructionType = without_oper_map.find(words[0]) != without_oper_map.end() ? 0 : 1;
+        insertMachineCode(instructionType, words, &listFile);
+
+        // write original line to list file
+        listFile << line << endl;
+        lineNum++;
+    }
+
+    // check for unused labels
+    for (const auto &labelPair : labelMap)
+    {
+        if (usedLabels.find(labelPair.first) == usedLabels.end())
+        {
+            string warningMessage = "Unused Label: " + labelPair.first;
+            warningSet.insert(warningMessage);
+        }
+    }
+
+    inputFile.close();
+    listFile.close();
+
+    generate_log_file(filename);
+
+    generate_log_file(filename);
+}
